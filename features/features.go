@@ -38,6 +38,7 @@ import (
 	update_activities "go.temporal.io/features/features/update/async_accepted"
 	update_deduplication "go.temporal.io/features/features/update/deduplication"
 	update_intercept "go.temporal.io/features/features/update/intercept"
+	update_mid_workflow_return "go.temporal.io/features/features/update/mid_workflow_return"
 	update_non_durable_reject "go.temporal.io/features/features/update/non_durable_reject"
 	update_self "go.temporal.io/features/features/update/self"
 	update_task_failure "go.temporal.io/features/features/update/task_failure"
@@ -81,6 +82,7 @@ func init() {
 		update_async_accepted.Feature,
 		update_deduplication.Feature,
 		update_intercept.Feature,
+		update_mid_workflow_return.Feature,
 		update_non_durable_reject.Feature,
 		update_self.Feature,
 		update_task_failure.Feature,
