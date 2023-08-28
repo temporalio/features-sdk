@@ -5,9 +5,12 @@ import (
 	"errors"
 	"fmt"
 	"math/rand"
-	"strings"
+	"os"
+	"strconv"
 	"time"
+	"unicode"
 
+	"github.com/google/uuid"
 	"go.temporal.io/features/features/update/updateutil"
 	"go.temporal.io/features/harness/go/harness"
 	"go.temporal.io/sdk/activity"
@@ -16,40 +19,70 @@ import (
 	"go.temporal.io/sdk/workflow"
 )
 
-const ReadOutputVar = "read_output_var"
+const (
+	ChargeAllow ChargeDecision = "CHARGE_ALLOW"
+	ChargeDeny  ChargeDecision = "CHARGE_DENY"
+
+	AuthorizationFailedErr  consterr = "authorization failed"
+	AuthenticationFailedErr consterr = "authentication failed"
+	FraudReportErr          consterr = "failed to send fraud report"
+	HoldReleaseErr          consterr = "failed release authorization hold"
+
+	ReadOutputVar = "read_output_var"
+)
+
+type (
+	ChargeDecision string
+	consterr       string
+
+	ChargeOutcome struct {
+		Decision ChargeDecision
+		Message  string
+	}
+
+	Authorization struct{ ID string }
+)
 
 var Feature = harness.Feature{
-	Workflows:  Payment,
-	Activities: []any{VerifyCCN, CheckRisk, RequestFundsTransfer, ReportToGovernment, AuditTransaction},
+	Workflows: Payment,
+	Activities: []any{
+		Authorize,
+		Authenticate,
+		WriteAuditEntry,
+		DeepFraudCheck,
+		ReportFraud,
+		ReleaseHold,
+		ScheduleFundRequest,
+	},
 	Execute: func(ctx context.Context, runner *harness.Runner) (client.WorkflowRun, error) {
 		if reason := updateutil.CheckServerSupportsUpdate(ctx, runner.Client); reason != "" {
 			return nil, runner.Skip(reason)
 		}
-		startopts := client.StartWorkflowOptions{
-			TaskQueue:                runner.TaskQueue,
-			WorkflowExecutionTimeout: 2 * time.Minute,
-		}
+		var (
+			ccn       = getEnvDefault("PAYMENT_CCN", "0123456789012345")
+			subject   = getEnvDefault("PAYMENT_SUBJECT", "John Doe")
+			addr      = getEnvDefault("PAYMENT_ADDR", "123 Main St.")
+			threshold = must(strconv.ParseFloat(getEnvDefault("PAYMENT_FRAUD_THRESHOLD", "0.67"), 64))
+		)
 
 		// Over the next dozen or so lines we (1) start a workflow and then (2)
 		// immediately issue an update. These two steps could be combined into
 		// UpdateWithStart.
-		run, err := runner.Client.ExecuteWorkflow(ctx, startopts, Payment, "mpm", "0111111111111111", 0.67)
+		startopts := client.StartWorkflowOptions{TaskQueue: runner.TaskQueue, WorkflowExecutionTimeout: 2 * time.Minute}
+		run, err := runner.Client.ExecuteWorkflow(ctx, startopts, Payment, ccn, subject, addr, threshold)
 		if err != nil {
 			return nil, err
 		}
-		handle, err := runner.Client.UpdateWorkflow(ctx, run.GetID(), run.GetRunID(), ReadOutputVar, "verification_outcome")
+
+		// this could be handle := runner.Client.ReadOutputVar(ctx, run.GetID(), run.GetRunID(), "charge_outcome")
+		handle, err := runner.Client.UpdateWorkflow(ctx, run.GetID(), run.GetRunID(), ReadOutputVar, "charge_outcome")
 		runner.Require.NoError(err)
 
-		var summary VerificationSummary
-		runner.Require.NoError(handle.Get(ctx, &summary))
+		var chargeOutcome ChargeOutcome
+		runner.Require.NoError(handle.Get(ctx, &chargeOutcome))
 
-		if !summary.AllPassed() {
-			runner.Log.Info("~~> Verification failed so returning early", "summary", summary)
-			return run, nil
-		}
-
-		runner.Log.Info("~~> Verification completed successfully")
-		runner.Log.Info("~~> WF will now execute the transaction in the background")
+		runner.Log.Info("~~> Verification completed", "outcome", chargeOutcome.Decision)
+		runner.Log.Info("~~> User-interactive process can be done here, workflow continues in background")
 		runner.Log.Info("~~> For the purposes of this test will will stick around to check on the result")
 
 		var processingError temporal.ApplicationError
@@ -61,141 +94,120 @@ var Feature = harness.Feature{
 	},
 }
 
-type VerificationDecision string
+func Payment(ctx workflow.Context, ccn, subject, address string, fraudThreshold float64) error {
+	setOutput := must(newOutputter(ctx))
 
-const (
-	VerificationPassed VerificationDecision = "PASSED"
-	VerificationFailed VerificationDecision = "FAILED"
-)
-
-type VerificationOutcome struct {
-	Decision VerificationDecision
-	Message  string
-	Descr    string
-}
-
-type VerificationSummary struct {
-	Outcomes []VerificationOutcome
-}
-
-func (vs *VerificationSummary) String() string {
-	var buf strings.Builder
-	buf.WriteString("[")
-	for _, check := range vs.Outcomes {
-		buf.WriteString("descr='")
-		buf.WriteString(check.Descr)
-		buf.WriteString("'; result='")
-		buf.WriteString(string(check.Decision))
-		buf.WriteString("'; message='")
-		buf.WriteString(check.Message)
-	}
-	buf.WriteString("']")
-	return buf.String()
-}
-
-func (vs *VerificationSummary) AllPassed() bool {
-	for _, check := range vs.Outcomes {
-		if check.Decision != VerificationPassed {
-			return false
-		}
-	}
-	return true
-}
-
-func VerifyCCN(ctx context.Context, ccn string) (VerificationOutcome, error) {
-	outcome := VerificationOutcome{
-		Decision: VerificationPassed,
-		Descr:    "CCN verfication",
-	}
-	if len(ccn) != 16 {
-		outcome.Decision = VerificationFailed
-		outcome.Message = fmt.Sprintf("expected 16 digits, found %v", len(ccn))
-	}
-	if ccn[0] != '0' {
-		outcome.Decision = VerificationFailed
-		outcome.Message = fmt.Sprintf("expected first digit to be '0', found '%c'", ccn[0])
-	}
-	return outcome, nil
-}
-
-func CheckRisk(ctx context.Context, subject string, threshold float64) (VerificationOutcome, error) {
-	outcome := VerificationOutcome{
-		Decision: VerificationPassed,
-		Descr:    "Risk check",
-	}
-	if risk := rand.Float64(); risk > threshold {
-		outcome.Decision = VerificationFailed
-		outcome.Message = fmt.Sprintf("risk rating of %v for subject %v exceeds threshold of %v", risk, subject, threshold)
-	}
-	return outcome, nil
-}
-
-func RequestFundsTransfer(ctx context.Context, ccn string) error {
-	time.Sleep(6 * time.Second)
-	if rand.Float64() > 0.5 {
-		return errors.New("=== fund transfer failed because sometimes it's like that")
-	}
-	activity.GetLogger(ctx).Info("=== funds transferred")
-	return nil
-}
-
-func ReportToGovernment(ctx context.Context, subject string) error {
-	time.Sleep(2 * time.Second)
-	activity.GetLogger(ctx).Info("=== activity reported to government", "subject", subject)
-	return nil
-}
-
-func AuditTransaction(ctx context.Context) error {
-	time.Sleep(4 * time.Second)
-	activity.GetLogger(ctx).Info("=== transaction written to audit log")
-	return nil
-}
-
-func Payment(ctx workflow.Context, subject, ccn string, riskThreshold float64) error {
-	workflowOutput := must(newOutputter(ctx))
-
-	var summary VerificationSummary
-	var verificationErr error
+	var hold Authorization
+	var chargeErr error
 	verificationCtx := workflow.WithLocalActivityOptions(ctx, workflow.LocalActivityOptions{
-		StartToCloseTimeout: 500 * time.Millisecond,
+		ScheduleToCloseTimeout: 500 * time.Millisecond,
 	})
-	verificationCallback := func(f workflow.Future) {
-		var outcome VerificationOutcome
-		if err := f.Get(ctx, &outcome); err != nil {
-			verificationErr = errors.Join(verificationErr, err)
-			return
-		}
-		summary.Outcomes = append(summary.Outcomes, outcome)
+	sel := workflow.NewNamedSelector(ctx, "charge")
+	sel.AddFuture(workflow.ExecuteLocalActivity(verificationCtx, Authorize, ccn),
+		func(f workflow.Future) { chargeErr = errors.Join(chargeErr, f.Get(ctx, &hold)) })
+	sel.AddFuture(workflow.ExecuteLocalActivity(verificationCtx, Authenticate, subject, address),
+		func(f workflow.Future) { chargeErr = errors.Join(chargeErr, f.Get(ctx, nil)) })
+	selectN(ctx, sel, 2)
+	chargeOutcome := newChargeOutcomeFromError(chargeErr)
+
+	// could be workflow.Output("charge_outcome", chargeOutcome)
+	setOutput("charge_outcome", chargeOutcome)
+
+	processingCtx := workflow.WithStartToCloseTimeout(ctx, 60*time.Second)
+
+	if err := workflow.ExecuteActivity(processingCtx, WriteAuditEntry, subject, hold.ID).Get(ctx, nil); err != nil {
+		return err
 	}
-	sel := workflow.NewNamedSelector(ctx, "verification")
-	sel.AddFuture(workflow.ExecuteLocalActivity(verificationCtx, VerifyCCN, ccn), verificationCallback).
-		AddFuture(workflow.ExecuteLocalActivity(verificationCtx, CheckRisk, subject, riskThreshold), verificationCallback)
-	sel.Select(ctx)
-	sel.Select(ctx)
 
-	if verificationErr != nil {
-		return verificationErr
-	}
-
-	workflowOutput("verification_outcome", summary)
-
-	if !summary.AllPassed() {
+	if len(hold.ID) == 0 {
 		return nil
 	}
 
-	var processingErr error
-	joinErr := func(f workflow.Future) { processingErr = errors.Join(processingErr, f.Get(ctx, nil)) }
-	processingCtx := workflow.WithStartToCloseTimeout(ctx, 60*time.Second)
-	sel = workflow.NewNamedSelector(ctx, "processing")
-	sel.AddFuture(workflow.ExecuteActivity(processingCtx, RequestFundsTransfer, ccn), joinErr).
-		AddFuture(workflow.ExecuteActivity(processingCtx, ReportToGovernment, subject), joinErr).
-		AddFuture(workflow.ExecuteActivity(processingCtx, AuditTransaction), joinErr)
-	for i := 0; i < 3; i++ {
-		sel.Select(ctx)
-		if processingErr != nil {
-			return processingErr
-		}
+	if chargeOutcome.Decision == ChargeDeny {
+		return workflow.ExecuteActivity(processingCtx, ReleaseHold, hold).Get(ctx, nil)
 	}
+	var fraudScore float64
+	if err := workflow.ExecuteActivity(processingCtx, DeepFraudCheck, subject).Get(ctx, &fraudScore); err != nil {
+		return err
+	}
+	if fraudScore <= fraudThreshold {
+		return workflow.ExecuteActivity(processingCtx, ScheduleFundRequest, hold).Get(ctx, nil)
+	}
+
+	var fraudProcessingErr error
+	joinErr := func(f workflow.Future) { fraudProcessingErr = errors.Join(fraudProcessingErr, f.Get(ctx, nil)) }
+	sel = workflow.NewNamedSelector(ctx, "fraud_processing")
+	sel.AddFuture(workflow.ExecuteActivity(processingCtx, ReportFraud, subject), joinErr).
+		AddFuture(workflow.ExecuteActivity(processingCtx, ReleaseHold, hold), joinErr)
+	selectN(ctx, sel, 2)
+
+	return fraudProcessingErr
+}
+
+func (c consterr) Error() string { return string(c) }
+
+func Authorize(ctx context.Context, ccn string) (Authorization, error) {
+	if len(ccn) != 16 {
+		err := fmt.Errorf("%w: expected 16 digit CCN, found %v digits", AuthorizationFailedErr, len(ccn))
+		activity.GetLogger(ctx).Info("=== authorization failed", "error", err)
+		return Authorization{}, temporal.NewNonRetryableApplicationError(err.Error(), "EBADCCN", err)
+	}
+	if ccn[0] != '0' {
+		err := fmt.Errorf("%w: expected first digit to be '0', found '%c'", AuthorizationFailedErr, ccn[0])
+		activity.GetLogger(ctx).Info("=== authorization failed", "error", err)
+		return Authorization{}, temporal.NewNonRetryableApplicationError(err.Error(), "EBADCCN", err)
+	}
+	id := uuid.NewString()
+	activity.GetLogger(ctx).Info("=== authorization successful", "hold-id", id)
+	return Authorization{ID: id}, nil
+}
+
+func Authenticate(ctx context.Context, subject string, address string) error {
+	if len(address) == 0 || !unicode.IsDigit([]rune(address)[0]) {
+		err := fmt.Errorf("%w: address %q for subject %q seems bogus", AuthenticationFailedErr, address, subject)
+		activity.GetLogger(ctx).Info("=== authentication failed", "error", err)
+		return temporal.NewNonRetryableApplicationError(err.Error(), "EBADADDR", err)
+	}
+	activity.GetLogger(ctx).Info("=== authentication successful")
+	return nil
+}
+
+func WriteAuditEntry(ctx context.Context, subject, authzID string) error {
+	time.Sleep(5 * time.Second)
+	activity.GetLogger(ctx).Info("=== wrote audit log", "subject", subject, "authorization-hold-id", authzID)
+	return nil
+}
+
+func DeepFraudCheck(ctx context.Context, subject string) (float64, error) {
+	time.Sleep(5 * time.Second)
+	score := rand.Float64()
+	activity.GetLogger(ctx).Info("=== fraud score calculated", "subject", subject, "score", score)
+	return score, nil
+}
+
+func ReportFraud(ctx context.Context, subject string) error {
+	const threshold = 0.6
+	time.Sleep(5 * time.Second)
+	if chance := rand.Float64(); chance > threshold {
+		return fmt.Errorf("=== %w: bad luck (%v > %v)", FraudReportErr, chance, threshold)
+	}
+	activity.GetLogger(ctx).Info("=== fraud report sent", "subject", subject)
+	return nil
+}
+
+func ReleaseHold(ctx context.Context, hold Authorization) error {
+	const threshold = 0.75
+	time.Sleep(3 * time.Second)
+	if chance := rand.Float64(); chance > 0.75 {
+		return fmt.Errorf("=== %w: bad luck (%v > %v)", HoldReleaseErr, chance, threshold)
+	}
+	activity.GetLogger(ctx).Info("=== authorization hold released", "authorization-hold-id", hold.ID)
+	return nil
+}
+
+func ScheduleFundRequest(ctx context.Context, hold Authorization) error {
+	time.Sleep(3 * time.Second)
+	activity.GetLogger(ctx).Info("=== scheduled fund request into batch", "authorization-hold-id", hold.ID)
 	return nil
 }
 
@@ -237,4 +249,24 @@ func must[T any](t T, err error) T {
 		panic(err)
 	}
 	return t
+}
+
+func getEnvDefault(name, defval string) string {
+	if v := os.Getenv(name); v != "" {
+		return v
+	}
+	return defval
+}
+
+func newChargeOutcomeFromError(err error) ChargeOutcome {
+	if err == nil {
+		return ChargeOutcome{Decision: ChargeAllow}
+	}
+	return ChargeOutcome{Decision: ChargeDeny, Message: err.Error()}
+}
+
+func selectN(ctx workflow.Context, sel workflow.Selector, n int) {
+	for i := 0; i < n; i++ {
+		sel.Select(ctx)
+	}
 }
