@@ -367,20 +367,25 @@ func (r *Runner) handleSingleHistory(ctx context.Context, client client.Client, 
 		TaskQueue:      feature.TaskQueue,
 		FeatureStarted: r.createTime,
 	}
+	storage := history.Storage{Dir: filepath.Join(r.rootDir, "features", feature.Dir, "history"), Lang: r.config.Lang}
+	// Load all histories from storage to validate against
+	existingSet, err := storage.Load()
+	if err != nil {
+		return err
+	}
+	if !r.config.GenerateHistory && len(existingSet.ByVersion) == 0 {
+		r.log.Info("Skipping history check since nothing to check against and not generating",
+			"Feature", feature.Dir)
+		return nil
+	}
 	currHist, err := fetcher.Fetch(ctx)
 	if err != nil {
 		return fmt.Errorf("failed getting history: %w", err)
 	}
-	storage := history.Storage{Dir: filepath.Join(r.rootDir, "features", feature.Dir, "history"), Lang: r.config.Lang}
 
 	// Do a check against all scrubbed existing histories to ensure nothing
 	// changed
 	if !r.config.DisableHistoryCheck {
-		// Load all histories from storage to validate against
-		existingSet, err := storage.Load()
-		if err != nil {
-			return err
-		}
 
 		// Check that all versions of history match the current one when scrubbed
 		// TODO(cretz): Allow some versions to ignore histories from other versions
