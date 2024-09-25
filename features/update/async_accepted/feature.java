@@ -3,6 +3,7 @@ package update.async_accepted;
 import io.temporal.activity.ActivityInterface;
 import io.temporal.client.UpdateHandle;
 import io.temporal.client.UpdateOptions;
+import io.temporal.client.WorkflowUpdateTimeoutOrCancelledException;
 import io.temporal.client.WorkflowUpdateException;
 import io.temporal.client.WorkflowUpdateStage;
 import io.temporal.client.WorkflowUpdateTimeoutOrCancelledException;

@@ -2,6 +2,7 @@ package update.client_interceptor;
 
 import io.temporal.client.UpdateHandle;
 import io.temporal.client.WorkflowClientOptions;
+import io.temporal.client.UpdateHandle;
 import io.temporal.common.interceptors.WorkflowClientCallsInterceptor;
 import io.temporal.common.interceptors.WorkflowClientCallsInterceptorBase;
 import io.temporal.common.interceptors.WorkflowClientInterceptorBase;
