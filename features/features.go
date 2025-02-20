@@ -2,6 +2,7 @@ package features
 
 import (
 	activity_basic_no_workflow_timeout "github.com/temporalio/features/features/activity/basic_no_workflow_timeout"
+
 	activity_cancel_try_cancel "github.com/temporalio/features/features/activity/cancel_try_cancel"
 	activity_retry_on_error "github.com/temporalio/features/features/activity/retry_on_error"
 	bugs_go_activity_start_race "github.com/temporalio/features/features/bugs/go/activity_start_race"
@@ -45,6 +46,7 @@ import (
 	update_client_interceptor "github.com/temporalio/features/features/update/client_interceptor"
 	update_deduplication "github.com/temporalio/features/features/update/deduplication"
 	update_non_durable_reject "github.com/temporalio/features/features/update/non_durable_reject"
+	update_non_durable_reject_with_events "github.com/temporalio/features/features/update/non_durable_reject_with_events"
 	update_self "github.com/temporalio/features/features/update/self"
 	update_task_failure "github.com/temporalio/features/features/update/task_failure"
 	update_validation_replay "github.com/temporalio/features/features/update/validation_replay"
@@ -99,6 +101,7 @@ func init() {
 		update_deduplication.Feature,
 		update_client_interceptor.Feature,
 		update_non_durable_reject.Feature,
+		update_non_durable_reject_with_events.Feature,
 		update_self.Feature,
 		update_task_failure.Feature,
 		update_validation_replay.Feature,
