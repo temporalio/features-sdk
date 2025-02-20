@@ -12,6 +12,7 @@ use Spiral\Core\Attribute\Proxy;
 use Spiral\Core\Container\InjectorInterface;
 use Temporal\Client\WorkflowOptions;
 use Temporal\Client\WorkflowStubInterface;
+use Temporal\Common\IdReusePolicy;
 
 /**
  * @implements InjectorInterface<WorkflowStubInterface>
@@ -51,6 +52,7 @@ final class WorkflowStubInjector implements InjectorInterface
         $feature = $this->container->get(Feature::class);
         $options = WorkflowOptions::new()
             ->withTaskQueue($feature->taskQueue)
+            ->withWorkflowIdReusePolicy(IdReusePolicy::AllowDuplicate)
             ->withEagerStart($attribute->eagerStart);
 
         $attribute->workflowId === null or $options = $options->withWorkflowId($attribute->workflowId);

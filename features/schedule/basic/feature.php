@@ -42,7 +42,6 @@ class FeatureChecker
         Feature $feature,
         State $runtime,
     ): void {
-        throw new SkipTest('TODO: https://github.com/temporalio/features/issues/580');
         $workflowId = Uuid::uuid4()->toString();
         $scheduleId = Uuid::uuid4()->toString();
         $interval = CarbonInterval::seconds(2);

@@ -70,13 +70,13 @@ $workflowClient = WorkflowClient::create(
     serviceClient: $serviceClient,
     options: (new ClientOptions())->withNamespace($runtime->namespace),
     converter: $converter,
-)->withTimeout(5);
+)->withTimeout(10);
 
 $scheduleClient = ScheduleClient::create(
     serviceClient: $serviceClient,
     options: (new ClientOptions())->withNamespace($runtime->namespace),
     converter: $converter,
-)->withTimeout(5);
+)->withTimeout(10);
 
 $container = new Spiral\Core\Container();
 $container->bindSingleton(State::class, $runtime);
