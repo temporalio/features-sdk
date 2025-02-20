@@ -25,6 +25,35 @@ spotless {
     }
 }
 
+ext {
+    def fetchLatestVersion = {
+        def url = 'https://api.github.com/repos/temporalio/sdk-java/releases/latest'
+        def connection = new URL(url).openConnection()
+        connection.setRequestProperty("Accept", "application/vnd.github.v3+json")
+
+        // Read the entire response as a single string
+        def response = connection.inputStream.text
+
+        // Use a regular expression to find the tag_name value
+        def matcher = (response =~ /"tag_name"\s*:\s*"(.*?)"/)
+        if (matcher.find()) {
+            def version = matcher.group(1).replaceFirst("^v", "")
+            println "Fetched latest SDK version: ${version}"
+            return version
+        } else {
+            throw new Exception("Failed to extract tag_name from GitHub response")
+        }
+    }
+    
+    // Default fallback version in case fetching the latest version fails
+    latestSdkVersion = "1.0.0"
+    try {
+        latestSdkVersion = fetchLatestVersion()
+    } catch (Exception e) {
+        println "Failed to fetch latest SDK version; using fallback: ${latestSdkVersion}"
+    }
+}
+
 
 dependencies {
     implementation 'ch.qos.logback:logback-classic:1.2.9'
@@ -32,7 +61,7 @@ dependencies {
     implementation 'com.google.code.gson:gson:2.8.9'
     implementation 'com.jayway.jsonpath:json-path:2.6.0'
     implementation 'info.picocli:picocli:4.6.2'
-    implementation 'io.temporal:temporal-sdk:1.26.1'
+    implementation "io.temporal:temporal-sdk:${latestSdkVersion}"
     implementation 'org.junit.jupiter:junit-jupiter-api:5.8.1'
     implementation 'org.reflections:reflections:0.10.2'
 }
